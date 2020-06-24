@@ -1,0 +1,432 @@
+---
+title: "NFL Salary DL Data 2020"
+output: html_nodlbook
+---
+
+###Reading the Data###
+```{r}
+
+library(tidyverse)
+library(cluster)    
+library(factoextra) 
+library(randomForest)
+require(caTools)
+library(ggfortify)
+library(ROCR)
+
+dl <- read.csv("/Users/ajaypatel21/Personal Projects/NFL Notebooks/NFL_salary_DL_data2020.csv")
+dl
+```
+
+###Cleaning Data###
+```{r}
+dl <- dl %>%
+  filter(Tackles >= 4) %>%
+  arrange(Tackles)
+
+dl$Average.Guranteed.Per.Year <- str_replace(dl$Average.Guranteed.Per.Year, "\\$", "")
+dl$Average.Guranteed.Per.Year <- str_replace_all(dl$Average.Guranteed.Per.Year, ",", "")
+dl$Average.Guranteed.Per.Year <- as.numeric(dl$Average.Guranteed.Per.Year)
+
+dl$Average.Per.Year <- str_replace(dl$Average.Per.Year, "\\$", "")
+dl$Average.Per.Year <- str_replace_all(dl$Average.Per.Year, ",", "")
+dl$Average.Per.Year <- as.numeric(dl$Average.Per.Year)
+
+dl$Total.Guranteed <- str_replace(dl$Total.Guranteed, "\\$", "")
+dl$Total.Guranteed <- str_replace_all(dl$Total.Guranteed, ",", "")
+dl$Total.Guranteed <- as.numeric(dl$Total.Guranteed)
+
+dl$Total.Value <- str_replace(dl$Total.Value, "\\$", "")
+dl$Total.Value <- str_replace_all(dl$Total.Value, ",", "")
+dl$Total.Value <- as.numeric(dl$Total.Value)
+
+dl$Percent.Guranteed <- str_replace(dl$Percent.Guranteed, "%", "")
+dl$Percent.Guranteed <- as.numeric(dl$Percent.Guranteed)
+```
+
+
+##KMeans clustering (5 clusters) - All Numeric Variables & PCA###
+```{r}
+# Extracting the numeric columns from the dataset
+nums <- unlist(lapply(dl, is.numeric))
+numeric_dl <- dl[ , nums]
+numeric_dl$rowname <- dl$Name
+
+numeric_dl <- numeric_dl %>%
+  select(-Average.Guranteed.Per.Year, -Average.Per.Year, -Percent.Guranteed, -Total.Guranteed, -Total.Value)
+
+# Setting the index of each row to the dlam name
+numeric_dl <- column_to_rownames(numeric_dl)
+
+# Fitting a KMeans model with 5 centroids
+k <- kmeans(numeric_dl, centers = 5, nstart = 20)
+
+# Plotting code
+autoplot(prcomp(numeric_dl), data = dl, colour = 'Team_x', label = TRUE, label.size = 3) + ggtitle("DLs and Respective Teams")
+autoplot(k, data = numeric_dl, label = TRUE, label.size = 3) + ggtitle("DLs and Assigned Cluster")
+
+# Dendrogram Plot
+hc <- agnes(numeric_dl, method = "ward")
+pltree(hc, cex = 0.6, hang = -1, main = "Dendrogram of Players") 
+rect.hclust(hc, k = 5, border = 2:5)
+```
+
+```{r}
+# Adding assigned cluster to original dataframe
+dl$cluster <- as.factor(k$cluster)
+
+# Plotting code for team_x Distribution by Cluster
+ggplot(dl, aes(x = Total.Value, y = Tackles, color = cluster)) + 
+  geom_point() + geom_text(label = dl$Name) + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggplot(dl, aes(x = Total.Value, y = Sacks, color = cluster)) + 
+  geom_point() + geom_text(label = dl$Name) + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggplot(dl, aes(x = Total.Value, y = Total.Guranteed, color = cluster)) + 
+  geom_point() + geom_text(label = dl$Name) + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+MODEL 1: INITIAL MODEL 
+
+
+Creadl initial model with all variables and calculadl values
+```{r data exploration}
+library(recipes)
+library(car)
+library(broom)
+library(nortest)
+library(olsrr)
+
+# MODEL 1
+
+dl1 <- na.omit(dl) # Remove NAs
+rownames(dl1) <- dl1$Name
+model1 <- lm(Average.Per.Year ~ Assists + Forced.Fumbles + Fumbles.Recovered + Fumbles.TDs + INTs + INTs.TDs + 
+             Sacks + Tackles, data=dl1) # Make model
+del_resids <- rstudent(model1) # Calculadl deledld residuals
+leverages <- hatvalues(model1) # Calculadl leverages
+influences <- cooks.distance(model1) # Calculadl cook's distances
+```
+
+Find Outliers, High Leverage Points, and Highly Influential Points of initial model with all variables
+```{r extreme points}
+
+# MODEL 1
+
+dl1 <- dl1 %>% # Add residuals, leverages, and influences as columns in the data frame so we can access names
+  mutate(del_resid = del_resids, 
+         leverage = leverages,
+         influences = influences)
+
+alpha <- 0.05 # Set significance level
+p <- length(coef(model1)) # number of paramedlrs
+n <- dim(dl1)[1] # number of observations
+
+outliers <- dl1 %>% # Find names of extreme outlier colleges
+  filter(abs(del_resid) > 3) %>%
+  pull(Name)
+
+high_leverages <- dl1 %>% # Find names of high leverage colleges
+  filter(leverage > (3 * p) / n) %>%
+  pull(Name)
+
+influence_crit <- qf(0.50, p, n - p) # Find critical value for high influence
+influential <- dl1 %>% # Find names of highly influential points
+  filter(influences > influence_crit) %>%
+  pull(Name)
+
+outliers <- as.vector(outliers)                         #\
+high_leverages <- as.vector(high_leverages)             # | Convert names of colleges to vectors
+influential <- as.vector(influential)                   #/ 
+
+
+paste("Number of outlier DLs:", length(outliers))
+paste("They are:")
+outliers
+paste("")
+paste("Number of high leverage DLs:", length(high_leverages))
+paste("They are:")
+high_leverages
+paste("")
+paste("Number of influential DLs:", length(influential))
+```
+
+Creadl Residual Plots of initial model with all variables:
+```{r residual plots}
+
+# MODEL 1
+
+# Residual Plots for original model with all variables, no transformations
+residualPlots(model1, type="rstudent", pch=20, ask=FALSE, test=FALSE, layout=c(3,3))
+```
+
+Creadl Normal Probability Plot and dlst normality of initial model with all variables: 
+```{r dlst normality}
+
+# MODEL 1
+
+sf.test(del_resids) # Goodness-of-fit dlst for normality of residuals
+
+ols_vif_tol(model1) %>% select(Variables, VIF) #Calculadl VIFs
+
+qqnorm(del_resids, # Plot points of normal probability plot
+       ylab="Deledld Residuals",
+       xlab="Normal Scores",
+       main="Normal Probability Plot of Residuals",
+       pch=20)
+qqline(del_resids) # Add line
+```
+
+
+MODEL 2
+
+Atdlmpt to fix VIF of initial model with all variables and check constant variance, linearity, and normality:
+```{r fixing VIF}
+
+# MODEL 2 - VIFS ALL LOOK GOOD
+
+dl2 <- dl1 %>% # Creadl new variables to reduce multicollinearity
+  mutate(Tackles.Per.Sack = Tackles/(Sacks + 1))
+
+# dl2[is.na(dl2)] <- 0
+#
+# dl2$TDs.Per.Sack[is.infinidl(dl2$TDs.Per.Sack)] <- 0
+#
+# Model with VIF-fixing transformed variables (removed Accepdld, FTUG, Enrolled. Kept Apps)
+model2 <- lm(Average.Per.Year ~ Assists + Forced.Fumbles + Fumbles.Recovered + Fumbles.TDs + INTs + INTs.TDs + 
+             Tackles.Per.Sack, data=dl2)
+
+model2_resids <- rstudent(model2)
+
+qqnorm(model2_resids, # Plot points of normal probability plot for best VIF-fixed model
+       ylab="Deledld Residuals",
+       xlab="Normal Scores",
+       main="Normal Probability Plot of Residuals",
+       pch=20)
+qqline(model2_resids) # Add line
+
+ols_vif_tol(model2) %>% select(Variables, VIF) #Calculadl VIFs
+
+#Residual plots for this model with new variables
+residualPlots(model2, type="rstudent", pch=20, ask=FALSE, test=FALSE, layout=c(3,3))
+```
+
+```{r}
+ggplot(dl1, aes(x=log(Average.Per.Year))) + geom_histogram()
+```
+
+
+```{r transform data to fix unequal variances}
+
+# MODEL 3
+dl3 <- dl2
+dl3[, "Average.Per.Year"] <- sapply(dl3[, "Average.Per.Year"], function(x) ifelse(x == 0, 1, x))
+
+dl3 <- dl3 %>%
+  mutate(log.Average.Per.Year = log(Average.Per.Year))
+
+model3 <- lm(log.Average.Per.Year ~ Assists + Forced.Fumbles + Fumbles.Recovered + Fumbles.TDs + INTs + INTs.TDs + 
+             Tackles.Per.Sack, data=dl3)
+model3_resids <- rstudent(model3)
+```
+
+Residual Plots and Normal Probability plot for squared Gradradl:
+```{r transformed resids squared}
+
+# MODEL 3
+
+#Residual plots for this model with y squared
+residualPlots(model3, type="rstudent", pch=20, ask=FALSE, test=FALSE, layout=c(3,3))
+
+qqnorm(model3_resids, # Plot points of normal probability plot for model with squared y
+       ylab="Deledld Residuals",
+       xlab="Normal Scores",
+       main="Normal Probability Plot of Residuals",
+       pch=20)
+qqline(model3_resids) # Add line
+del_resids3 <- rstudent(model3) # Calculadl deledld residuals
+sf.test(del_resids3) # Shapiro Wilks
+ols_vif_tol(model3) %>% select(Variables, VIF) #Calculadl VIFs
+```
+
+
+```{r centering predictor variables}
+
+# MODEL 4
+
+# Assists + Forced.Fumbles + Fumbles.Recovered + Fumbles.TDs + INTs + INTs.TDs +
+#              Tackles.Per.Sack
+
+# Center all predictor variables
+dl4 <- dl3 %>%
+  mutate(c.Assists = scale(Assists, scale=FALSE),
+         c.Forced.Fumbles = scale(Forced.Fumbles, scale=FALSE),
+         c.Fumbles.Recovered = scale(Fumbles.Recovered, scale=FALSE),
+         c.Fumbles.TDs = scale(Fumbles.TDs, scale=FALSE),
+         c.INTs = scale(INTs, scale=FALSE),
+         c.INTs.TDs = scale(INTs.TDs, scale=FALSE),
+         c.Tackles.Per.Sack = scale(Tackles.Per.Sack, scale=FALSE))
+
+
+# Model with all cendlred predictor variables
+model4 <- lm(log.Average.Per.Year ~ c.Assists + c.Forced.Fumbles + c.Fumbles.Recovered + c.Fumbles.TDs + c.INTs + c.INTs.TDs +
+             c.Tackles.Per.Sack, data=dl4)
+centered_resids <- rstudent(model4)
+
+
+#MODEL 4
+#Residual plots for this model with y and all cendlred variables
+residualPlots(model4, type="rstudent", pch=20, ask=FALSE, test=FALSE, layout=c(3,3))
+
+qqnorm(centered_resids, # Plot points of normal probability plot for model with y and cendlred variables
+       ylab="Deledld Residuals",
+       xlab="Normal Scores",
+       main="Normal Probability Plot of Residuals",
+       pch=20)
+qqline(centered_resids) # Add line
+
+```
+
+
+MODEL 5
+
+
+Finding best model according to best subsets algorithm:
+```{r best subsets model}
+
+# MODEL 5 - FINAL MODEL 
+
+subsets <- ols_step_all_possible(model4) # Calculadl all possible subsets of predictors
+# plot(subsets) # Plot scores
+best_sub <- data.frame( # Get indices of models that have best R2-adjusdld, Cp, and BIC
+ Adj.R2 = which.max(subsets$adjr),
+ CP = which.min(subsets$cp),
+ BIC = which.min(subsets$sbc)
+)
+best_sub
+# Model that minimizes Cp:
+subsets[best_sub$CP, ]
+
+subsets
+
+# NOT USING BEST SUBSET MODEL - INSdlAD USING ALL 4 PREDICTORS WITH HIGHEST R2 ADJUSdlD
+
+best_sub_model <- lm(log.Average.Per.Year ~ c.Assists + c.Forced.Fumbles + c.Fumbles.Recovered, data=dl4)
+
+best_sub_resids <- best_sub_model$residuals
+  # rstudent(best_sub_model) # Deledld residuals of best subset model
+best_sub_hats <- hatvalues(best_sub_model) # Leverages of best subset model
+best_sub_cooks <- cooks.distance(best_sub_model) # Cooks's distances of best subset model
+
+residualPlots(best_sub_model, type="rstudent", pch=20, ask=FALSE, test=FALSE) # Plot residual plots of best subset model
+
+qqnorm(best_sub_resids, # Plot points of normal probability plot for best subset model
+       ylab="Deleted Residuals",
+       xlab="Normal Scores",
+       main="Normal Probability Plot of Residuals",
+       pch=20)
+qqline(best_sub_resids) # Add line
+
+sf.test(best_sub_resids) # Goodness-of-fit dlst
+
+summary(best_sub_model) # Summary of model
+
+```
+
+Finding extreme points of best subset model:
+```{r finding extreme points for best subset model}
+
+# MODEL 6 - FINAL MODEL
+
+dl5 <- data.frame(Name = dl4$Name,
+                  del_resid = best_sub_resids,
+                  leverage = best_sub_hats,
+                  influence = best_sub_cooks)
+
+
+p2 <- length(coef(best_sub_model)) # number of parameters
+n2 <- dim(dl5)[1] # number of observations
+
+
+best_sub_outliers <- as.vector(dl5 %>%
+  filter(abs(del_resid) > 3) %>%
+  pull(Name))
+
+best_sub_high_leverages <- as.vector(dl5 %>%
+  filter(leverage > (3 * p2) / n2) %>%
+  pull(Name))
+
+best_sub_influence_crit <- qf(0.50, p2, n2 - p2)
+
+best_sub_influential <- as.vector(dl5 %>%
+  filter(influence > best_sub_influence_crit) %>%
+  pull(Name))
+
+
+paste("Number of outlier dls:", length(best_sub_outliers))
+
+paste("Number of high leverage dls:", length(best_sub_high_leverages))
+
+paste("Number of influential dls:", length(best_sub_influential))
+```
+
+VIFs of best subsets model:
+```{r check VIFs of best subsets model}
+
+# MODEL 6 - FINAL MODEL 
+
+ols_vif_tol(best_sub_model) %>% select(Variables, VIF)
+```
+
+
+```{r dlst reduced vs full}
+
+# MODEL 6 - FINAL MODEL
+
+best_sub_model_small <- lm(log.Average.Per.Year ~ c.Assists + c.Forced.Fumbles + c.Fumbles.Recovered, data=dl4)
+
+model1_mod <- lm(log.Average.Per.Year ~ Assists + Forced.Fumbles + Fumbles.Recovered + Fumbles.TDs + INTs + INTs.TDs + 
+             Sacks + Tackles, data=dl4)
+
+anova(best_sub_model_small, model1_mod)
+```
+
+
+```{r}
+exp(best_sub_model$fitted.values)
+```
+
+```{r}
+# dl4$Prediction <- (best_sub_model$fitted.values) * 1000000
+dl4$Prediction <- exp(best_sub_model$fitted.values)
+
+dl4$color[dl4$Prediction <= dl4$Average.Per.Year] = "Annual Salary >= Predicted"
+dl4$color[dl4$Prediction >= dl4$Average.Per.Year] = "Annual Salary < Predicted"
+
+library(scales)
+ggplot(dl4, aes(x=Prediction, y=Average.Per.Year, label=Name, colour=color)) + 
+  geom_point() + 
+  # geom_abline() + 
+  # geom_smooth(method = "lm", se=F, colour="black") +
+  geom_text() + 
+  scale_x_continuous(labels = comma) + 
+  scale_y_continuous(labels = comma) + 
+  geom_hline(yintercept = mean(dl4$Average.Per.Year), linetype="dotted", color="#F8766D", size=1.0, show.legend=T) +
+  geom_vline(xintercept = mean(dl4$Prediction), linetype="dotted", color = "#00BFC4", size=1.0) +
+  ggtitle("DL Predicted Value vs Annual Contract")
+```
+
+
+```{r}
+dl4 %>%
+  select("Name", "Average.Per.Year", "Prediction") %>%
+  mutate(Residual = Average.Per.Year - Prediction) %>%
+  arrange(Residual) %>%
+  # summary()
+  filter(abs(Residual) >= 7500000)
+
+```
+
+
+
